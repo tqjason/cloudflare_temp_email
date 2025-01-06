@@ -1,7 +1,13 @@
 <!-- markdownlint-disable-file MD004 MD024 MD034 MD036 -->
 # CHANGE LOG
 
-## main(v0.8.3)
+## main(v0.8.4)
+
+- fix: |UI| 修复 admin portal 无收件人邮箱删除调用api 错误
+- feat: |Telegram Bot| 增加 telegram bot 清理无效地址凭证命令
+- feat: 增加 worker 配置 `DISABLE_ANONYMOUS_USER_CREATE_EMAIL` 禁用匿名用户创建邮箱地址，只允许登录用户创建邮箱地址
+
+## v0.8.3
 
 - feat: |Github Action| 增加自动更新并部署功能
 - feat: |UI| admin 用户设置，支持 oauth2 配置的删除
