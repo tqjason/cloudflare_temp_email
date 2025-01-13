@@ -2,10 +2,10 @@ import { Context } from "hono";
 
 import { getEnvStringList } from "../utils";
 import { sendMailToTelegram } from "../telegram_api";
-import { Bindings, HonoCustomType } from "../types";
+import { Bindings, HonoCustomType, RPCEmailMessage, ParsedEmailContext } from "../types";
 import { auto_reply } from "./auto_reply";
 import { isBlocked } from "./black_list";
-import { triggerWebhook } from "../common";
+import { triggerWebhook, triggerAnotherWorker, commonParseMail } from "../common";
 import { check_if_junk_mail } from "./check_junk";
 
 
@@ -16,10 +16,13 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
         return;
     }
     const rawEmail = await new Response(message.raw).text();
+    const parsedEmailContext: ParsedEmailContext = {
+        rawEmail: rawEmail
+    };
 
     // check if junk mail
     try {
-        const is_junk = await check_if_junk_mail(env, message.to, rawEmail, message.headers.get("Message-ID"));
+        const is_junk = await check_if_junk_mail(env, message.to, parsedEmailContext, message.headers.get("Message-ID"));
         if (is_junk) {
             message.setReject("Junk mail");
             console.log(`Junk mail from ${message.from} to ${message.to}`);
@@ -31,14 +34,19 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
 
     const message_id = message.headers.get("Message-ID");
     // save email
-    const { success } = await env.DB.prepare(
-        `INSERT INTO raw_mails (source, address, raw, message_id) VALUES (?, ?, ?, ?)`
-    ).bind(
-        message.from, message.to, rawEmail, message_id
-    ).run();
-    if (!success) {
-        message.setReject(`Failed save message to ${message.to}`);
-        console.log(`Failed save message from ${message.from} to ${message.to}`);
+    try {
+        const { success } = await env.DB.prepare(
+            `INSERT INTO raw_mails (source, address, raw, message_id) VALUES (?, ?, ?, ?)`
+        ).bind(
+            message.from, message.to, rawEmail, message_id
+        ).run();
+        if (!success) {
+            message.setReject(`Failed save message to ${message.to}`);
+            console.log(`Failed save message from ${message.from} to ${message.to}`);
+        }
+    }
+    catch (error) {
+        console.log("save email error", error);
     }
 
     // forward email
@@ -55,7 +63,7 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
     try {
         await sendMailToTelegram(
             { env: env } as Context<HonoCustomType>,
-            message.to, rawEmail, message_id);
+            message.to, parsedEmailContext, message_id);
     } catch (error) {
         console.log("send mail to telegram error", error);
     }
@@ -64,10 +72,28 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
     try {
         await triggerWebhook(
             { env: env } as Context<HonoCustomType>,
-            message.to, rawEmail, message_id
+            message.to, parsedEmailContext, message_id
         );
     } catch (error) {
         console.log("send webhook error", error);
+    }
+
+    // trigger another worker
+    try {
+        const headersMap = new Map<string, string>();
+        if (message.headers) {
+            message.headers.forEach((value, key) => { headersMap.set(key, value); });
+        }
+        const parsedText = (await commonParseMail(parsedEmailContext))?.text ?? ""
+        const rpcEmail: RPCEmailMessage = {
+            from: message.from,
+            to: message.to,
+            rawEmail: rawEmail,
+            headers: headersMap
+        }
+        await triggerAnotherWorker({ env: env } as Context<HonoCustomType>, rpcEmail, parsedText);
+    } catch (error) {
+        console.error("trigger another worker error", error);
     }
 
     // auto reply email

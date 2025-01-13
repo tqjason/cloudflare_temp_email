@@ -1,8 +1,8 @@
 import { Context } from 'hono';
 import { Jwt } from 'hono/utils/jwt'
 
-import { getBooleanValue, getDomains, getStringValue, getIntValue, getUserRoles, getDefaultDomains, getJsonSetting } from './utils';
-import { HonoCustomType, UserRole } from './types';
+import { getBooleanValue, getDomains, getStringValue, getIntValue, getUserRoles, getDefaultDomains, getJsonSetting, getAnotherWorkerList } from './utils';
+import { HonoCustomType, UserRole, AnotherWorker, RPCEmailMessage, ParsedEmailContext } from './types';
 import { unbindTelegramByAddress } from './telegram_api/common';
 import { CONSTANTS } from './constants';
 import { AdminWebhookSettings, WebhookMail, WebhookSettings } from './models';
@@ -256,16 +256,22 @@ export const handleListQuery = async (
 }
 
 
-export const commonParseMail = async (raw_mail: string | undefined | null): Promise<{
+export const commonParseMail = async (parsedEmailContext: ParsedEmailContext): Promise<{
     sender: string,
     subject: string,
     text: string,
     html: string,
     headers?: Record<string, string>[]
 } | undefined> => {
-    if (!raw_mail) {
+    // check parsed email context is valid
+    if (!parsedEmailContext || !parsedEmailContext.rawEmail) {
         return undefined;
     }
+    // return parsed email if already parsed
+    if (parsedEmailContext.parsedEmail) {
+        return parsedEmailContext.parsedEmail;
+    }
+    const raw_mail = parsedEmailContext.rawEmail;
     // TODO: WASM parse email
     // try {
     //     const { parse_message_wrapper } = await import('mail-parser-wasm-worker');
@@ -275,7 +281,9 @@ export const commonParseMail = async (raw_mail: string | undefined | null): Prom
     //         sender: parsedEmail.sender || "",
     //         subject: parsedEmail.subject || "",
     //         text: parsedEmail.text || "",
-    //         headers: parsedEmail.headers || [],
+    //         headers: parsedEmail.headers?.map(
+    //             (header) => ({ key: header.key, value: header.value })
+    //         ) || [],
     //         html: parsedEmail.body_html || "",
     //     };
     // } catch (e) {
@@ -358,7 +366,7 @@ export async function sendWebhook(settings: WebhookSettings, formatMap: WebhookM
 export async function triggerWebhook(
     c: Context<HonoCustomType>,
     address: string,
-    raw_mail: string,
+    parsedEmailContext: ParsedEmailContext,
     message_id: string | null
 ): Promise<void> {
     if (!c.env.KV || !getBooleanValue(c.env.ENABLE_WEBHOOK)) {
@@ -391,14 +399,14 @@ export async function triggerWebhook(
         `SELECT id FROM raw_mails where address = ? and message_id = ?`
     ).bind(address, message_id).first<string>("id");
 
-    const parsedEmail = await commonParseMail(raw_mail);
+    const parsedEmail = await commonParseMail(parsedEmailContext);
     const webhookMail = {
         id: mailId || "",
         url: c.env.FRONTEND_URL ? `${c.env.FRONTEND_URL}?mail_id=${mailId}` : "",
         from: parsedEmail?.sender || "",
         to: address,
         subject: parsedEmail?.subject || "",
-        raw: raw_mail,
+        raw: parsedEmailContext.rawEmail || "",
         parsedText: parsedEmail?.text || "",
         parsedHtml: parsedEmail?.html || ""
     }
@@ -406,6 +414,49 @@ export async function triggerWebhook(
         const res = await sendWebhook(settings, webhookMail);
         if (!res.success) {
             console.error(res.message);
+        }
+    }
+}
+
+export async function triggerAnotherWorker(
+    c: Context<HonoCustomType>,
+    rpcEmailMessage: RPCEmailMessage,
+    parsedText: string | undefined | null
+): Promise<void> {
+    if (!parsedText) {
+        return;
+    }
+
+    const anotherWorkerList: AnotherWorker[] = getAnotherWorkerList(c);
+    if (!getBooleanValue(c.env.ENABLE_ANOTHER_WORKER) || anotherWorkerList.length === 0) {
+        return;
+    }
+
+    const parsedTextLowercase: string = parsedText.toLowerCase();
+    for (const worker of anotherWorkerList) {
+
+        const keywords = worker?.keywords ?? [];
+        const bindingName = worker?.binding ?? "";
+        const methodName = worker.method ?? "rpcEmail";
+
+        const serviceBinding = (c.env as any)[bindingName] ?? {};
+        const method = serviceBinding[methodName];
+
+        if (!method || typeof method !== "function") {
+            console.log(`method = ${methodName} not found or not function`);
+            continue;
+        }
+
+        if (!keywords.some(keyword => keyword && parsedTextLowercase.includes(keyword.toLowerCase()))) {
+            console.log(`worker.binding = ${bindingName} not match keywords, parsedText = ${parsedText}`);
+            continue;
+        }
+
+        try {
+            const requestBody = JSON.stringify(rpcEmailMessage);
+            await method(requestBody);
+        } catch (e1) {
+            console.error(`execute method = ${methodName} error`, e1);
         }
     }
 }
