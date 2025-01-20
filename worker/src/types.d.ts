@@ -50,6 +50,8 @@ export type Bindings = {
     ENABLE_ANOTHER_WORKER: string | boolean | undefined
     ANOTHER_WORKER_LIST: string | AnotherWorker[] | undefined
 
+    REMOVE_ALL_ATTACHMENT: string | boolean | undefined
+    REMOVE_EXCEED_SIZE_ATTACHMENT: string | boolean | undefined
 
     // s3 config
     S3_ENDPOINT: string | undefined
@@ -108,7 +110,7 @@ type RPCEmailMessage = {
     from: string | undefined | null,
     to: string | undefined | null,
     rawEmail: string | undefined | null,
-    headers: Map<string, string>,
+    headers: object | undefined | null,
 }
 
 type ParsedEmailContext = {

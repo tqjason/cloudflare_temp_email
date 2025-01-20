@@ -7,6 +7,7 @@ import { auto_reply } from "./auto_reply";
 import { isBlocked } from "./black_list";
 import { triggerWebhook, triggerAnotherWorker, commonParseMail } from "../common";
 import { check_if_junk_mail } from "./check_junk";
+import { remove_attachment_if_need } from "./check_attachment";
 
 
 async function email(message: ForwardableEmailMessage, env: Bindings, ctx: ExecutionContext) {
@@ -29,7 +30,14 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
             return;
         }
     } catch (error) {
-        console.log("check junk mail error", error);
+        console.error("check junk mail error", error);
+    }
+
+    // remove attachment if configured or size > 2MB
+    try {
+        await remove_attachment_if_need(env, parsedEmailContext, message.from, message.to, message.rawSize);
+    } catch (error) {
+        console.error("remove attachment error", error);
     }
 
     const message_id = message.headers.get("Message-ID");
@@ -38,15 +46,15 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
         const { success } = await env.DB.prepare(
             `INSERT INTO raw_mails (source, address, raw, message_id) VALUES (?, ?, ?, ?)`
         ).bind(
-            message.from, message.to, rawEmail, message_id
+            message.from, message.to, parsedEmailContext.rawEmail, message_id
         ).run();
         if (!success) {
             message.setReject(`Failed save message to ${message.to}`);
-            console.log(`Failed save message from ${message.from} to ${message.to}`);
+            console.error(`Failed save message from ${message.from} to ${message.to}`);
         }
     }
     catch (error) {
-        console.log("save email error", error);
+        console.error("save email error", error);
     }
 
     // forward email
@@ -56,7 +64,7 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
             await message.forward(forwardAddress);
         }
     } catch (error) {
-        console.log("forward email error", error);
+        console.error("forward email error", error);
     }
 
     // send email to telegram
@@ -65,7 +73,7 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
             { env: env } as Context<HonoCustomType>,
             message.to, parsedEmailContext, message_id);
     } catch (error) {
-        console.log("send mail to telegram error", error);
+        console.error("send mail to telegram error", error);
     }
 
     // send webhook
@@ -75,21 +83,18 @@ async function email(message: ForwardableEmailMessage, env: Bindings, ctx: Execu
             message.to, parsedEmailContext, message_id
         );
     } catch (error) {
-        console.log("send webhook error", error);
+        console.error("send webhook error", error);
     }
 
     // trigger another worker
     try {
-        const headersMap = new Map<string, string>();
-        if (message.headers) {
-            message.headers.forEach((value, key) => { headersMap.set(key, value); });
-        }
-        const parsedText = (await commonParseMail(parsedEmailContext))?.text ?? ""
+        const parsedEmail = (await commonParseMail(parsedEmailContext));
+        const parsedText = parsedEmail?.text ?? ""
         const rpcEmail: RPCEmailMessage = {
             from: message.from,
             to: message.to,
             rawEmail: rawEmail,
-            headers: headersMap
+            headers: message.headers
         }
         await triggerAnotherWorker({ env: env } as Context<HonoCustomType>, rpcEmail, parsedText);
     } catch (error) {
