@@ -5,6 +5,7 @@ import { getJsonSetting, saveSetting, checkUserPassword, getDomains, getUserRole
 import { UserSettings, GeoData, UserInfo } from "../models";
 import { handleListQuery } from '../common'
 import { HonoCustomType } from '../types';
+import UserBindAddressModule from '../user_api/bind_address';
 
 export default {
     getSetting: async (c: Context<HonoCustomType>) => {
@@ -143,5 +144,13 @@ export default {
             return c.text("Failed to update user roles", 500)
         }
         return c.json({ success: true })
-    }
+    },
+    bindAddress: async (c: Context<HonoCustomType>) => {
+        const { user_id, address_id } = await c.req.json();
+        return await UserBindAddressModule.bindByID(c, user_id, address_id);
+    },
+    getBindedAddresses: async (c: Context<HonoCustomType>) => {
+        const { user_id } = c.req.param();
+        return await UserBindAddressModule.getBindedAddressesById(c, user_id);
+    },
 }
